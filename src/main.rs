@@ -18,8 +18,8 @@ use executor::{Executor, Spawner};
 
 struct AcceptTask {
     listener: TcpListener,
-    reactor: Rc<Reactor>,
     spawner: Spawner,
+    reactor: Rc<Reactor>,
     registered: bool,
 }
 
