@@ -81,13 +81,12 @@ git log tells the story.
 
 ## Blog series
 
-- [Part 1: Feeling async at the kernel level](./blog/part1.md)
+- [Part 1: Feeling async at the kernel level](https://www.benali.org/blog/2026-05-12-feeling-async.html)
   — five tiny programs, no abstractions. Blocking vs non-blocking vs epoll.
   How `timerfd` unifies time and I/O.
 
-- [Part 2: Building the runtime](./blog/part2.md)
-  — Reactor, Executor, Waker, Tasks. From manual dispatcher to working
-  `async fn`.
+- **Part 2: Building the runtime** — *coming soon.* Reactor, Executor, Waker,
+  Tasks. From manual dispatcher to working `async fn`.
 
 ## Where this could go next
 
