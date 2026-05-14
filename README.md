@@ -103,5 +103,5 @@ This is a learning artifact. For real work use `tokio`, `smol`, or
 
 ## Built by
 
-[Osben](https://github.com/BenaliOssama) — a backend/systems engineer
+[OUSSAMA BENALI](https://benali.org) — a backend/systems engineer
 working through Rust async from first principles.
