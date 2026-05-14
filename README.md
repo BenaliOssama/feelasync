@@ -1,88 +1,108 @@
 # feelasync
 
-A tiny async runtime built from first principles — going all the way down to the bones.
+A tiny async runtime in Rust, built from scratch to understand how runtimes
+actually work.
 
-The goal is not to ship a production runtime. The goal is to *feel* how async works, layer by layer, starting from the hardware and climbing up until a real executor is sitting in front of you.
+This is a learning project. The goal is not to compete with tokio — the goal
+is to demystify it. By building each piece bottom-up from raw `epoll` syscalls
+up to working `async fn`, the magic of `async`/`await` and `Future` becomes
+just structure you've written yourself.
 
----
+## What this does
 
-## The idea
+- Single-threaded async runtime, ~400 lines of Rust.
+- Handles many concurrent TCP connections on one thread.
+- Supports timers via `timerfd`.
+- 0% CPU when idle. Parks on `epoll_wait` and is woken by hardware interrupts.
+- Accepts real Rust `async fn` and `.await`.
+- No dependencies except `libc`.
 
-Modern async runtimes feel like magic until you trace them back to what is actually happening. A `Future` suspended on `.await` is ultimately just a task the OS woke up when a hardware event fired — an interrupt, handled by the kernel, surfaced through a syscall, caught by a reactor, which nudges a waker, which re-queues the task for the executor.
+## Architecture
 
-This project is that chain, written by hand, in Rust, with no async/await and no Tokio.
+Three pieces talking through a fourth:
 
----
+- **Reactor** (`src/reactor.rs`) — owns the epoll instance. Maps `fd → Waker`.
+  When an fd becomes ready, calls its waker. Knows nothing about tasks.
+- **Executor** (`src/executor.rs`) — owns tasks and the ready queue. Polls
+  tasks. When nothing is ready, asks the Reactor to park. Knows nothing
+  about epoll.
+- **Waker** (`src/waker.rs`) — the wire between them. A small handle that
+  pushes a task id onto the ready queue when called.
+- **Tasks** — anything implementing `std::future::Future`. The compiler
+  generates these for you when you write `async fn`.
 
-## The layers (bottom up)
-
-```
-hardware interrupt
-      ↓
-  kernel (IRQ handler, device driver)
-      ↓
-  epoll  (Linux's I/O readiness notification — epoll_create / epoll_wait)
-      ↓
-  Reactor  (owns the epoll fd, maps fd → Waker)
-      ↓
-  Waker    (a tiny handle that pushes a TaskId onto the ready queue)
-      ↓
-  Executor (poll loop: drain ready queue → call task.poll() → sleep in reactor)
-      ↓
-  Task     (your async logic, as a hand-rolled state machine)
-```
-
-The file layout mirrors these layers directly:
-
-| file | responsibility |
-|---|---|
-| `reactor.rs` | owns epoll, maps `fd → Waker`, calls `waker.wake()` on I/O events |
-| `waker.rs` | a clonable handle that pushes a `TaskId` onto the executor's ready queue |
-| `executor.rs` | poll loop + `Spawner` so tasks can spawn other tasks |
-| `timer.rs` | a one-shot timer task built on `timerfd_create` |
-| `main.rs` | a non-blocking TCP echo server — the demo that exercises all of it |
-
----
-
-## What works right now
-
-- `epoll`-based reactor wrapping raw `libc` calls
-- Single-threaded executor with a ready queue
-- Tasks spawning other tasks at runtime (via `Spawner`)
-- `timerfd`-backed timer tasks
-- A TCP echo server: accepts connections, spawns an `EchoTask` per socket, all running concurrently inside the one loop
+The whole event flow:
 
 ```
-$ cargo run
-listening on 127.0.0.1:7878
->>> timer [three-sec] fired        # after 3 s
-new conn fd 7 from 127.0.0.1:XXXXX
-fd 7 read 13 bytes
->>> timer [seven-sec] fired        # after 7 s
+packet arrives at NIC
+  → hardware interrupt → kernel handler → fd marked ready
+  → executor's epoll_wait returns
+  → reactor looks up fd's waker → waker.wake() → task id on ready queue
+  → executor pops the id → polls the task
+  → task does work → returns Ready or Pending
 ```
 
----
+## Run it
 
-## What is missing / still ahead
+```bash
+cargo run
+```
 
-This is a work in progress. Layers still to climb:
+Then in another terminal:
 
-- [ ] Proper `Future` / `Poll` traits (align with Rust's std model)
-- [ ] Combinators (`join`, `select`, timeout wrappers)
-- [ ] Async write support
-- [ ] Actual `async fn` integration via the `Future` trait
-- [ ] Understanding where `Pin` fits and why
+```bash
+nc 127.0.0.1 7878
+```
 
----
+Type bytes, see them logged. Two timers fire after 3s and 7s. CPU stays at
+0% between events.
 
-## Why "feelasync"
+## File structure
 
-Because the point is to *feel* it — not read about it, not import it, but wire it yourself from the syscall up and watch it move.
+```
+src/
+├── main.rs       — entry point; async functions for the echo server
+├── executor.rs   — task storage, ready queue, run loop, Spawner
+├── reactor.rs    — epoll wrapper, fd → waker map
+├── waker.rs      — std::task::Waker construction via RawWakerVTable
+├── io.rs         — Readable future (await on fd readiness)
+└── timer.rs      — TimerTask, an fd-based timer future
+```
 
----
+## Why bottom-up
 
-## Stack
+I tried understanding async top-down through tutorials. It didn't stick.
+Every abstraction felt like ceremony. So I went the other way: started with
+a single blocking socket read, watched the kernel park my thread, kept
+adding pressure until each abstraction was a real fix to a real problem.
 
-- Rust (no async/await, no Tokio, no futures crate)
-- `libc` for raw syscalls (`epoll_*`, `timerfd_*`)
-- Linux only (epoll is Linux-specific)
+Each commit in this repo corresponds to one step in that journey. The
+git log tells the story.
+
+## Blog series
+
+- [Part 1: Feeling async at the kernel level](./blog/part1.md)
+  — five tiny programs, no abstractions. Blocking vs non-blocking vs epoll.
+  How `timerfd` unifies time and I/O.
+
+- [Part 2: Building the runtime](./blog/part2.md)
+  — Reactor, Executor, Waker, Tasks. From manual dispatcher to working
+  `async fn`.
+
+## Where this could go next
+
+- Replace epoll with `io_uring`.
+- Multi-threaded executor with work-stealing.
+- Add a SignalTask using `signalfd`.
+- Channel-based wakeups between tasks (`Sender`/`Receiver`).
+- Compare with tokio's `Runtime`, `Scheduler`, `Driver` source.
+
+## Not for production
+
+This is a learning artifact. For real work use `tokio`, `smol`, or
+`async-std`. Read this to understand them.
+
+## Built by
+
+[Osben](https://github.com/BenaliOssama) — a backend/systems engineer
+working through Rust async from first principles.
