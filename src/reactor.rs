@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::os::fd::RawFd;
 use std::rc::Rc;
-use crate::waker::Waker;
+use std::waker::Waker;
 
 pub struct Reactor {
     epfd: i32,
