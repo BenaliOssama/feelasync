@@ -1,90 +1,66 @@
 mod executor;
+mod io;
 mod reactor;
-mod task;
 mod timer;
 mod waker;
 
-use std::cell::RefCell;
 use std::io::{ErrorKind, Read};
 use std::net::{TcpListener, TcpStream};
 use std::os::fd::{AsRawFd, RawFd};
 use std::rc::Rc;
-use reactor::Reactor;
-use task::{Poll, Task};
-use timer::TimerTask;
-use waker::Waker;
 
 use executor::{Executor, Spawner};
+use reactor::Reactor;
+use timer::TimerTask;
+use crate::io::readable;
 
-struct AcceptTask {
-    listener: TcpListener,
-    spawner: Spawner,
-    reactor: Rc<Reactor>,
-    registered: bool,
+async fn handle_connection(mut socket: TcpStream, fd: RawFd, reactor: Rc<Reactor>) {
+    let mut buf = [0u8; 1024];
+    loop {
+        readable(fd, reactor.clone()).await;
+
+        loop {
+            match socket.read(&mut buf) {
+                Ok(0) => {
+                    println!("fd {} closed", fd);
+                    reactor.unregister(fd);
+                    return;
+                }
+                Ok(n) => println!("fd {} read {} bytes", fd, n),
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break, // back to await
+                Err(e) => {
+                    eprintln!("fd {} error: {}", fd, e);
+                    reactor.unregister(fd);
+                    return;
+                }
+            }
+        }
+    }
 }
 
-impl Task for AcceptTask {
-    fn poll(&mut self, waker: &Waker) -> Poll {
-        if !self.registered {
-            self.reactor.register(self.listener.as_raw_fd(), waker.clone());
-            self.registered = true;
-        }
+async fn accept_loop(listener: TcpListener, reactor: Rc<Reactor>, spawner: Spawner) {
+    let listener_fd = listener.as_raw_fd();
+    loop {
+        readable(listener_fd, reactor.clone()).await;
+
         loop {
-            match self.listener.accept() {
+            match listener.accept() {
                 Ok((socket, addr)) => {
                     socket.set_nonblocking(true).unwrap();
                     let sock_fd = socket.as_raw_fd();
                     println!("new conn fd {} from {}", sock_fd, addr);
-                    self.spawner.spawn(Rc::new(RefCell::new(EchoTask {
-                        socket,
-                        fd: sock_fd,
-                        reactor: self.reactor.clone(),
-                        registered: false,
-                    })));
+                    spawner.spawn(handle_connection(socket, sock_fd, reactor.clone()));
                 }
-                Err(e) if e.kind() == ErrorKind::WouldBlock => return Poll::Pending,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                 Err(e) => {
                     eprintln!("accept error: {}", e);
-                    return Poll::Pending;
+                    break;
                 }
             }
         }
     }
 }
 
-
-struct EchoTask {
-    socket: TcpStream,
-    fd: RawFd,
-    reactor: Rc<Reactor>,
-    registered: bool,
-}
-
-impl Task for EchoTask {
-    fn poll(&mut self, waker: &Waker) -> Poll {
-        if !self.registered {
-            self.reactor.register(self.fd, waker.clone());
-            self.registered = true;
-        }
-        let mut buf = [0u8; 1024];
-        loop {
-            match self.socket.read(&mut buf) {
-                Ok(0) => {
-                    println!("fd {} closed", self.fd);
-                    self.reactor.unregister(self.fd);
-                    return Poll::Ready;
-                }
-                Ok(n) => println!("fd {} read {} bytes", self.fd, n),
-                Err(e) if e.kind() == ErrorKind::WouldBlock => return Poll::Pending,
-                Err(e) => {
-                    eprintln!("fd {} error: {}", self.fd, e);
-                    self.reactor.unregister(self.fd);
-                    return Poll::Ready;
-                }
-            }
-        }
-    }
-}
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -94,15 +70,9 @@ fn main() {
     let mut executor = Executor::new(reactor.clone());
     let spawner = executor.spawner();
 
-    executor.spawn(Rc::new(RefCell::new(AcceptTask {
-        listener,
-        reactor: reactor.clone(),
-        spawner: spawner.clone(),
-        registered: false,
-    })));
+    executor.spawn(accept_loop(listener, reactor.clone(), spawner));
+    executor.spawn(TimerTask::new(3, "three-sec", reactor.clone()));
+    executor.spawn(TimerTask::new(7, "seven-sec", reactor.clone()));
 
-    executor.spawn(Rc::new(RefCell::new(TimerTask::new(3, "three-sec", reactor.clone()))));
-    executor.spawn(Rc::new(RefCell::new(TimerTask::new(7, "seven-sec", reactor.clone()))));
-
-    executor.run();   // <-- single call, runs until all tasks finish
+    executor.run();
 }

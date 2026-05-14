@@ -33,7 +33,7 @@ const VTABLE: RawWakerVTable = RawWakerVTable::new(clone_fn, wake_fn, wake_by_re
 
 /// clone: duplicate the waker (e.g. when something wants to keep a copy).
 unsafe fn clone_fn(ptr: *const ()) -> RawWaker {
-    let data = &*(ptr as *const WakerData);
+    let data = unsafe { &*(ptr as *const WakerData) };
     let cloned = Box::new(WakerData {
         task_id: data.task_id,
         queue: data.queue.clone(),
@@ -43,18 +43,18 @@ unsafe fn clone_fn(ptr: *const ()) -> RawWaker {
 
 /// wake: trigger the wake, then free the waker (it's consumed).
 unsafe fn wake_fn(ptr: *const ()) {
-    let data = Box::from_raw(ptr as *mut WakerData);
+    let data = unsafe { Box::from_raw(ptr as *mut WakerData) };
     data.queue.borrow_mut().push(data.task_id);
     // data drops here — memory freed.
 }
 
 /// wake_by_ref: trigger the wake but don't consume the waker.
 unsafe fn wake_by_ref_fn(ptr: *const ()) {
-    let data = &*(ptr as *const WakerData);
+    let data = unsafe { &*(ptr as *const WakerData) };
     data.queue.borrow_mut().push(data.task_id);
 }
 
 /// drop: free the waker when nobody holds it anymore.
 unsafe fn drop_fn(ptr: *const ()) {
-    drop(Box::from_raw(ptr as *mut WakerData));
+    unsafe { drop(Box::from_raw(ptr as *mut WakerData)) };
 }

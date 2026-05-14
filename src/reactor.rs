@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::os::fd::RawFd;
 use std::rc::Rc;
-use std::waker::Waker;
+use std::task::Waker;
 
 pub struct Reactor {
     epfd: i32,
@@ -30,7 +30,13 @@ impl Reactor {
         let r = unsafe {
             libc::epoll_ctl(self.epfd, libc::EPOLL_CTL_ADD, fd, &mut event)
         };
-        assert_eq!(r, 0);
+        if r != 0 {
+            // Already registered → just update the waker.
+            let r2 = unsafe {
+                libc::epoll_ctl(self.epfd, libc::EPOLL_CTL_MOD, fd, &mut event)
+            };
+            assert_eq!(r2, 0, "epoll_ctl MOD failed");
+        }
         self.wakers.borrow_mut().insert(fd, waker);
     }
 
@@ -54,7 +60,7 @@ impl Reactor {
         for i in 0..n as usize {
             let fd = raw[i].u64 as RawFd;
             if let Some(waker) = self.wakers.borrow().get(&fd) {
-                waker.wake();
+                waker.wake_by_ref();
             }
         }
     }
